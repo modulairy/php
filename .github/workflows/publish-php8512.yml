@@ -63,7 +63,7 @@ jobs:
           trap 'docker rm -f php-http >/dev/null' EXIT
           printf '%s\n' '<?php echo PHP_VERSION;' > /tmp/php-health.php
           docker cp /tmp/php-health.php php-http:/var/www/html/health.php
-          result=$(curl --fail --silent --show-error --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:8080/health.php)
+          result=$(curl --fail --silent --show-error --max-time 5 --retry 20 --retry-all-errors --retry-delay 1 http://127.0.0.1:8080/health.php)
           test "$result" = 8.5.12
       - name: Publish tested architecture
         env:
