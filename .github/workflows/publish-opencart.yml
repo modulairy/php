@@ -56,7 +56,7 @@ jobs:
           printf '%s\n' 'RewriteEngine On' 'RewriteRule ^runtime-check$ index.php [L]' > /tmp/opencart-fixture/.htaccess
           docker run -d --name php-http -p 127.0.0.1:8080:80 \
             -v /tmp/opencart-fixture:/opt/modulairy-opencart/upload:ro \
-            "php-test:$ARCH" sh -ec 'ln -s /opt/modulairy-opencart/upload /var/www/html/public; exec apache2-foreground'
+            "php-test:$ARCH" sh -ec 'ln -s /opt/modulairy-opencart/upload /var/www/html/public; chown -h www-data:www-data /var/www/html/public; exec apache2-foreground'
           trap 'docker rm -f php-http >/dev/null' EXIT
           result=$(curl --fail --silent --show-error --max-time 5 --retry 20 --retry-all-errors --retry-delay 1 http://127.0.0.1:8080/runtime-check)
           test "$result" = 8.5.12:mysqli
