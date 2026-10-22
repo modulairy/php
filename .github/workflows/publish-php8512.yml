@@ -1,0 +1,98 @@
+name: Publish PHP 8.5.12 Apache
+
+on:
+  push:
+    branches: [codex/987-php8512-ghcr]
+    paths: [.github/workflows/publish-php8512.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-php8512
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/modulairy/php
+  VERSION: 8.5.12-apache-bookworm
+
+jobs:
+  build:
+    if: github.repository == 'modulairy/php'
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+          - arch: amd64
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify upstream recipe and build
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          git diff --exit-code e3eaff845f7a9f7259c31da54dce0320b47a3bbd -- 8.5/bookworm/apache LICENSE
+          grep -Fx 'ENV PHP_VERSION 8.5.12' 8.5/bookworm/apache/Dockerfile
+          docker build --pull --platform "linux/$ARCH" \
+            --label org.opencontainers.image.source=https://github.com/modulairy/php \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" \
+            --label org.opencontainers.image.version=8.5.12 \
+            --label org.opencontainers.image.description='Modulairy build from docker-library/php Apache Bookworm recipe' \
+            -t "php-test:$ARCH" 8.5/bookworm/apache
+      - name: Test PHP and Apache
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          docker run --rm "php-test:$ARCH" php -r 'exit(PHP_VERSION === "8.5.12" ? 0 : 1);'
+          docker run --rm "php-test:$ARCH" php -r 'foreach (["curl", "mbstring", "openssl", "PDO", "pdo_sqlite"] as $m) { if (!extension_loaded($m)) { throw new Exception($m); } }'
+          docker run --rm "php-test:$ARCH" php --version
+          docker run -d --name php-http -p 127.0.0.1:8080:80 "php-test:$ARCH"
+          trap 'docker rm -f php-http >/dev/null' EXIT
+          printf '%s\n' '<?php echo PHP_VERSION;' > /tmp/php-health.php
+          docker cp /tmp/php-health.php php-http:/var/www/html/health.php
+          result=$(curl --fail --silent --show-error --max-time 5 --retry 20 --retry-all-errors --retry-delay 1 http://127.0.0.1:8080/health.php)
+          test "$result" = 8.5.12
+      - name: Publish tested architecture
+        env:
+          ARCH: ${{ matrix.arch }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          trap 'docker logout ghcr.io >/dev/null' EXIT
+          for tag in "$VERSION-$ARCH-run-$GITHUB_RUN_ID" "$VERSION-$ARCH"; do
+            docker tag "php-test:$ARCH" "$IMAGE:$tag"
+            docker push "$IMAGE:$tag"
+          done
+
+  manifest:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      packages: write
+    steps:
+      - name: Publish tested multiarch manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          trap 'docker logout ghcr.io >/dev/null' EXIT
+          docker buildx imagetools create -t "$IMAGE:$VERSION" \
+            "$IMAGE:$VERSION-arm64-run-$GITHUB_RUN_ID" \
+            "$IMAGE:$VERSION-amd64-run-$GITHUB_RUN_ID"
+          docker buildx imagetools inspect "$IMAGE:$VERSION" | tee -a "$GITHUB_STEP_SUMMARY"
