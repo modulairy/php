@@ -11,7 +11,7 @@ RUN set -eux; \
 ENV APACHE_DOCUMENT_ROOT=/var/www/html/public
 RUN set -eux; \
     sed -ri 's!DocumentRoot /var/www/html!DocumentRoot ${APACHE_DOCUMENT_ROOT}!g' /etc/apache2/sites-available/000-default.conf; \
-    printf '%s\n' '<Directory /var/www/html/public>' '    Options FollowSymLinks' '    AllowOverride All' '    Require all granted' '</Directory>' > /etc/apache2/conf-available/opencart.conf; \
+    printf '%s\n' '<Directory /var/www/html/public>' '    Options FollowSymLinks' '    AllowOverride All' '    Require all granted' '</Directory>' '<Directory /opt/modulairy-opencart/upload>' '    Options FollowSymLinks' '    AllowOverride All' '    Require all granted' '</Directory>' > /etc/apache2/conf-available/opencart.conf; \
     a2enconf opencart; \
     printf '%s\n' 'error_reporting=E_ALL' 'display_errors=Off' 'log_errors=On' > /usr/local/etc/php/conf.d/production-errors.ini
 WORKDIR /var/www/html
