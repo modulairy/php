@@ -1,0 +1,90 @@
+name: Publish PHP OpenCart runtime
+on:
+  push:
+    branches: [codex/986-php8512-opencart-runtime]
+    paths:
+      - .github/workflows/publish-opencart.yml
+      - variants/opencart/**
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: publish-php-opencart
+  cancel-in-progress: false
+env:
+  IMAGE: ghcr.io/modulairy/php
+  VERSION: 8.5.12-apache-bookworm-opencart-r1
+jobs:
+  build:
+    if: github.repository == 'modulairy/php' && github.ref == 'refs/heads/codex/986-php8512-opencart-runtime'
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+          - arch: amd64
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Build runtime
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          docker build --pull --platform "linux/$ARCH" \
+            --label org.opencontainers.image.source=https://github.com/modulairy/php \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" \
+            --label org.opencontainers.image.version="$VERSION" \
+            -t "php-test:$ARCH" variants/opencart
+      - name: Verify extensions and persistent document root
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          docker run --rm "php-test:$ARCH" php -r 'if (PHP_VERSION !== "8.5.12") { exit(1); } foreach (["mysqli","pdo_mysql","gd","zip","intl","gmp","curl","mbstring","openssl"] as $m) { if (!extension_loaded($m)) { throw new Exception($m); } } $im=imagecreatetruecolor(2,2); ob_start(); imagewebp($im); if (!strlen(ob_get_clean())) { exit(2); }'
+          docker run --rm "php-test:$ARCH" sh -ec 'git --version; command -v cron; apache2ctl -t'
+          mkdir -p /tmp/opencart-fixture
+          printf '%s\n' '<?php echo PHP_VERSION, ":", extension_loaded("mysqli") ? "mysqli" : "missing";' > /tmp/opencart-fixture/index.php
+          printf '%s\n' 'RewriteEngine On' 'RewriteRule ^runtime-check$ index.php [L]' > /tmp/opencart-fixture/.htaccess
+          docker run -d --name php-http -p 127.0.0.1:8080:80 \
+            -v /tmp/opencart-fixture:/opt/modulairy-opencart/upload:ro \
+            "php-test:$ARCH" sh -ec 'ln -s /opt/modulairy-opencart/upload /var/www/html/public; exec apache2-foreground'
+          trap 'docker rm -f php-http >/dev/null' EXIT
+          result=$(curl --fail --silent --show-error --max-time 5 --retry 20 --retry-all-errors --retry-delay 1 http://127.0.0.1:8080/runtime-check)
+          test "$result" = 8.5.12:mysqli
+      - name: Publish tested architecture
+        env:
+          ARCH: ${{ matrix.arch }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          trap 'docker logout ghcr.io >/dev/null' EXIT
+          docker tag "php-test:$ARCH" "$IMAGE:$VERSION-$ARCH-run-$GITHUB_RUN_ID"
+          docker push "$IMAGE:$VERSION-$ARCH-run-$GITHUB_RUN_ID"
+  manifest:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      packages: write
+    steps:
+      - name: Publish tested multiarch runtime
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          trap 'docker logout ghcr.io >/dev/null' EXIT
+          docker buildx imagetools create -t "$IMAGE:$VERSION" \
+            "$IMAGE:$VERSION-arm64-run-$GITHUB_RUN_ID" \
+            "$IMAGE:$VERSION-amd64-run-$GITHUB_RUN_ID"
+          docker buildx imagetools inspect "$IMAGE:$VERSION" | tee -a "$GITHUB_STEP_SUMMARY"
